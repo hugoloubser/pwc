@@ -7,7 +7,22 @@ endpoints used in this module are:
 
 * `GetPeriods/{ifType}` – Returns a list of available reporting
   periods for the selected return type.  For BA900 the API returns
-  strings in the form `yyyy‑mm‑dd`【773677845686591†L7-L33】.
+  strings in the form `yyyy‑mm‑d        # Load all CSV files from this period
+        csv_files = list(period_dir.glob(\"*.csv\"))
+        for csv_file in csv_files:
+            try:
+                # Parse CSV file with custom parser
+                df = parse_ba900_csv(csv_file)
+                
+                if not df.empty:
+                    # Add period info
+                    df['Period'] = period
+                    df['InstitutionName'] = df.get('Institution', csv_file.stem)
+                    
+                    all_records.append(df)
+            except Exception as e:
+                # Skip files that can't be read
+                continue91†L7-L33】.
 * `GetInstitutions/{ifType}/{period}` – Returns a collection of
   institutions (banks) that filed a return for the given period.  Each
   record includes an identifier (`Id`), the bank name and the last
@@ -46,7 +61,7 @@ SARB_IFDATA_BASE = "https://custom.resbank.co.za/SarbWebApi/SarbData/IFData"
 
 # Default cache directory.  Users can override this by passing a
 # different path into `fetch_period_data`.
-DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
+DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "raw" / "test_data"
 
 
 def _ensure_dir(path: Path) -> None:
@@ -370,12 +385,82 @@ def get_default_periods_2024() -> List[str]:
         '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01'
     ]
 
-def load_scraped_data(periods: List[str], input_dir: Optional[Path] = None) -> pd.DataFrame:
-    """Load previously scraped BA900 data from cache.
+def parse_ba900_csv(csv_file: Path) -> pd.DataFrame:
+    """Parse a BA900 CSV file with metadata and tabular data.
     
-    This function loads cached data that was previously scraped using
-    fetch_period_data(). It looks for pickled DataFrames in the cache
-    directory structure.
+    Parameters
+    ---------- 
+    csv_file : Path
+        Path to the CSV file to parse
+        
+    Returns
+    -------
+    pd.DataFrame
+        Parsed data with metadata included
+    """
+    try:
+        # Read the raw file to find the header row
+        with open(csv_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # Extract metadata from first few lines and find table start
+        metadata = {}
+        table_start = 6  # Default to line 7 (0-indexed)
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Extract metadata from key,value pairs
+            if ',' in line and not line.startswith('Table') and not line.startswith('Description'):
+                parts = line.split(',', 1)
+                if len(parts) == 2 and i < 10:  # Only first few lines
+                    key, value = parts
+                    key = key.strip().strip('\"')
+                    value = value.strip().strip('\"')
+                    if key and value:
+                        metadata[key] = value
+            
+            # Find the Description header row
+            elif line.startswith('Description,') or line.startswith('\"Description\"'):
+                table_start = i
+                break
+        
+        # Read the tabular data starting from the header row
+        if table_start < len(lines):
+            df = pd.read_csv(csv_file, skiprows=table_start)
+            
+            # Clean up column names
+            df.columns = df.columns.str.strip()
+            
+            # Add metadata as columns
+            for key, value in metadata.items():
+                df[key] = value
+                
+            # Add institution info from filename
+            df['InstitutionID'] = csv_file.stem
+            df['FilePath'] = str(csv_file)
+            
+            return df
+        else:
+            # Fallback: try to read as regular CSV
+            df = pd.read_csv(csv_file)
+            df['InstitutionID'] = csv_file.stem
+            df['FilePath'] = str(csv_file)
+            return df
+            
+    except Exception as e:
+        # Return empty DataFrame if parsing fails
+        print(f"Error parsing {csv_file}: {e}")
+        return pd.DataFrame()
+
+def load_scraped_data(periods: List[str], input_dir: Optional[Path] = None) -> pd.DataFrame:
+    """Load previously scraped BA900 data from test_data cache.
+    
+    This function loads CSV data from the test_data directory structure.
+    The test_data contains CSV files organized by period in folders like
+    BA900_YYYY-MM-DD_zipcsv/.
     
     Parameters
     ----------
@@ -390,43 +475,34 @@ def load_scraped_data(periods: List[str], input_dir: Optional[Path] = None) -> p
         Combined DataFrame with all requested periods
     """
     in_dir = input_dir or DEFAULT_CACHE_DIR
-    ba900_dir = in_dir / "BA900"
     
-    if not ba900_dir.exists():
+    if not in_dir.exists():
         return pd.DataFrame()
     
     all_records = []
     
     for period in periods:
-        period_dir = ba900_dir / period
+        # Look for period directory in format BA900_YYYY-MM-DD_zipcsv
+        period_dir = in_dir / f"BA900_{period}_zipcsv"
         if not period_dir.exists():
             continue
             
-        # Look for pickle files first (faster)
-        pickle_files = list(period_dir.glob("*.pkl"))
-        if pickle_files:
-            for pickle_file in pickle_files:
-                try:
-                    df = pd.read_pickle(pickle_file)
-                    all_records.append(df)
-                except Exception:
-                    continue
-        else:
-            # Fall back to JSON files
-            json_files = list(period_dir.glob("*.json"))
-            for json_file in json_files:
-                try:
-                    with open(json_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    # Convert to DataFrame
-                    flattened = _flatten_record(data)
-                    df = pd.DataFrame([flattened])
+        # Load all CSV files from this period
+        csv_files = list(period_dir.glob("*.csv"))
+        for csv_file in csv_files:
+            try:
+                # Parse CSV file with custom parser
+                df = parse_ba900_csv(csv_file)
+                
+                if not df.empty:
+                    # Add period info
                     df['Period'] = period
-                    df['InstitutionName'] = json_file.stem
+                    df['InstitutionName'] = df.get('Institution', csv_file.stem)
+                    
                     all_records.append(df)
-                except Exception:
-                    continue
+            except Exception as e:
+                # Skip files that can't be read
+                continue
     
     if not all_records:
         return pd.DataFrame()
