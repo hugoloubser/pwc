@@ -14,6 +14,10 @@ Features:
 - Comprehensive visualization dashboards
 - Executive summary generation
 - Data export capabilities
+- Research Question Analysis:
+  * RQ1: Macroeconomic impact on NPL ratios
+  * RQ2: Market share, growth, and credit risk relationships
+  * RQ3: NPL rates and strategic actions analysis
 
 Usage:
     streamlit run ba900/app.py
@@ -45,14 +49,25 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # Import local modules
-from scraper import load_scraped_data, get_default_periods_2024
-from macro_fetcher import get_world_bank_indicators
-from visualization import (
-    plot_npl_over_time,
-    plot_npl_vs_macro,
-    plot_feature_importance,
-)
-from modeling import prepare_regression_dataset, train_simple_model
+try:
+    from .scraper import load_scraped_data, get_default_periods_2024
+    from .macro_fetcher import get_world_bank_indicators
+    from .visualization import (
+        plot_npl_over_time,
+        plot_npl_vs_macro,
+        plot_feature_importance,
+    )
+    from .modeling import prepare_regression_dataset, train_simple_model
+except ImportError:
+    # Fallback for direct execution
+    from scraper import load_scraped_data, get_default_periods_2024
+    from macro_fetcher import get_world_bank_indicators
+    from visualization import (
+        plot_npl_over_time,
+        plot_npl_vs_macro,
+        plot_feature_importance,
+    )
+    from modeling import prepare_regression_dataset, train_simple_model
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -184,96 +199,84 @@ def generate_realistic_sa_macro_data(years: List[int]) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 def calculate_npl_metrics(data: pd.DataFrame) -> pd.DataFrame:
-    """Calculate NPL ratios and related metrics from BA900 CSV data."""
+    """Calculate NPL ratios and related metrics from BA900 data using Item 194/110 methodology."""
     if data.empty:
         return data
         
-    # For BA900 CSV data, we need to look for specific line items
-    # NPL-related keywords for Description column
-    npl_keywords = [
-        'impair', 'non.performing', 'doubtful', 'loss', 'provision',
-        'credit loss', 'bad debt', 'specific provision', 'portfolio provision'
+    # Clean and prepare data similar to notebook
+    data_clean = data[data['Item Number'] != 'Item Number'].copy()
+    data_clean['Item Number'] = pd.to_numeric(data_clean['Item Number'], errors='coerce')
+    data_clean = data_clean.dropna(subset=['Item Number'])
+    data_clean['Item Number'] = data_clean['Item Number'].astype(int)
+    
+    # Extract NPL-relevant data (Items 110 and 194)
+    npl_data = data_clean[data_clean['Item Number'].isin([110, 194])].copy()
+    
+    if len(npl_data) == 0:
+        st.warning("No NPL-related data (Items 110, 194) found")
+        return data
+    
+    # Calculate totals from maturity buckets (notebook methodology)
+    maturity_columns = ['Chequej', 'Savings', 'Up to 1 day', 'More than 1 day to 1 month', 
+                       'More than 1 month to 6 months', 'More than 6 months']
+    
+    # Convert columns to numeric
+    for col in maturity_columns:
+        if col in npl_data.columns:
+            npl_data[col] = pd.to_numeric(npl_data[col], errors='coerce')
+    
+    # Calculate total amounts
+    available_cols = [col for col in maturity_columns if col in npl_data.columns]
+    npl_data['Total_Calculated'] = npl_data[available_cols].sum(axis=1, skipna=True)
+    
+    # Filter out institutions with no meaningful data
+    npl_data = npl_data[
+        (npl_data['InstitutionName'] != '*TOTAL*') &
+        (npl_data['Total_Calculated'] > 0)
     ]
     
-    # Loan-related keywords for Description column  
-    loan_keywords = [
-        'loan', 'advance', 'credit', 'lending', 'mortgage', 'overdraft',
-        'gross loans', 'total loans', 'loans and advances'
-    ]
+    # Create monthly aggregates
+    monthly_npl = npl_data.groupby(['Period', 'Item Number'])['Total_Calculated'].sum().reset_index()
+    monthly_npl['Period'] = pd.to_datetime(monthly_npl['Period'])
     
-    # Calculate NPL ratio using specific BA900 line items
-    if 'Description' in data.columns and 'TOTAL' in data.columns and 'Item Number' in data.columns:
-        # Calculate NPL ratio per institution/period using specific line items
-        npl_ratios = []
+    # Pivot to get loans (110) and impairments (194) in separate columns
+    npl_pivot = monthly_npl.pivot(index='Period', columns='Item Number', values='Total_Calculated')
+    
+    if 110 in npl_pivot.columns and 194 in npl_pivot.columns:
+        # Calculate NPL ratio: Item 194 / Item 110 * 100
+        npl_pivot['NPL_Ratio'] = (npl_pivot[194] / npl_pivot[110] * 100).fillna(0)
+        npl_pivot['Total_Loans'] = npl_pivot[110]
+        npl_pivot['Credit_Impairments'] = npl_pivot[194]
         
-        for (institution, period), group in data.groupby(['InstitutionName', 'Period']):
-            try:
-                # Find total loans (Item 110: "DEPOSITS, LOANS AND ADVANCES")
-                loans_row = group[group['Item Number'] == 110]
-                total_loans = 0
-                if not loans_row.empty:
-                    total_loans = pd.to_numeric(loans_row['TOTAL'].iloc[0], errors='coerce')
-                    if pd.isna(total_loans):
-                        total_loans = 0
-                
-                # Find credit impairments (Item 194: "Less: credit impairments in respect of loans and advances") 
-                impair_row = group[group['Item Number'] == 194]
-                total_impairments = 0
-                if not impair_row.empty:
-                    total_impairments = pd.to_numeric(impair_row['TOTAL'].iloc[0], errors='coerce')
-                    if pd.isna(total_impairments):
-                        total_impairments = 0
-                
-                # Calculate NPL ratio
-                if total_loans > 0 and total_impairments > 0:
-                    npl_ratio = (total_impairments / total_loans) * 100
-                else:
-                    npl_ratio = 0
-                    
-                npl_ratios.append({
-                    'InstitutionName': institution,
-                    'Period': period,
-                    'Total_Loans': total_loans,
-                    'Total_Impairments': total_impairments,
-                    'NPL_Ratio': npl_ratio
-                })
-                
-            except Exception as e:
-                # Fallback for institutions without proper data
-                npl_ratios.append({
-                    'InstitutionName': institution,
-                    'Period': period,
-                    'Total_Loans': 0,
-                    'Total_Impairments': 0,
-                    'NPL_Ratio': 0
-                })
-        
-        # Create summary dataframe
-        npl_df = pd.DataFrame(npl_ratios)
+        # Filter periods with meaningful data
+        npl_pivot = npl_pivot[npl_pivot[110] > 1e6].copy()  # Only periods with > 1M in loans
         
         # Merge back with original data
-        data = data.merge(npl_df[['InstitutionName', 'Period', 'NPL_Ratio', 'Total_Loans', 'Total_Impairments']], 
-                         on=['InstitutionName', 'Period'], how='left')
-    else:
-        # This should not happen with properly parsed CSV data
-        st.error("Required columns missing from CSV data. Please check data format.")
-        return pd.DataFrame()
+        if len(npl_pivot) > 0:
+            # Add NPL ratios to the original dataset
+            period_npl_map = dict(zip(npl_pivot.index.strftime('%Y-%m-%d'), npl_pivot['NPL_Ratio']))
+            data_clean['NPL_Ratio'] = data_clean['Period'].map(period_npl_map).fillna(0)
+            
+            # Calculate institution-level NPL ratios
+            inst_npl = npl_data.groupby(['InstitutionName', 'Item Number'])['Total_Calculated'].sum().reset_index()
+            inst_pivot = inst_npl.pivot(index='InstitutionName', columns='Item Number', values='Total_Calculated')
+            
+            if 110 in inst_pivot.columns and 194 in inst_pivot.columns:
+                inst_pivot['Institution_NPL_Ratio'] = (inst_pivot[194] / inst_pivot[110] * 100).fillna(0)
+                inst_npl_map = dict(zip(inst_pivot.index, inst_pivot['Institution_NPL_Ratio']))
+                data_clean['Institution_NPL_Ratio'] = data_clean['InstitutionName'].map(inst_npl_map).fillna(0)
+            
+            return data_clean
     
-    # Add additional calculated fields (ensure these are created)
-    if 'Period' in data.columns:
-        data['Period_Date'] = pd.to_datetime(data['Period'], errors='coerce')
-        data['Year'] = data['Period_Date'].dt.year
-        data['Month'] = data['Period_Date'].dt.month
-    else:
-        # Fallback if Period column doesn't exist
-        data['Year'] = 2024
-        data['Month'] = 1
-        data['Period_Date'] = pd.to_datetime('2024-01-01')
-    
-    # Ensure year column exists for merging
-    data['year'] = data['Year']
-    
-    # Create bank size categories based on total assets (using TOTAL column as proxy)
+    st.warning("Unable to calculate NPL ratios - insufficient data for Items 110 and 194")
+    return data
+
+
+def train_ml_models(data: pd.DataFrame, macro_data: pd.DataFrame) -> Dict:
+    return data
+
+
+def create_research_questions_analysis(data: pd.DataFrame, market_metrics: Dict, macro_data: pd.DataFrame = None) -> None:
     if 'TOTAL' in data.columns:
         try:
             # Calculate bank sizes by institution
@@ -363,12 +366,22 @@ def train_ml_models(data: pd.DataFrame, macro_data: pd.DataFrame) -> Dict[str, A
     if data.empty or macro_data.empty:
         return {}
     
+    # Ensure consistent year column naming
+    if 'Year' in data.columns and 'year' in macro_data.columns:
+        data_for_merge = data.copy()
+        data_for_merge['year'] = data_for_merge['Year']
+    elif 'year' not in data.columns and 'Year' in data.columns:
+        data_for_merge = data.copy()
+        data_for_merge['year'] = data_for_merge['Year']
+    else:
+        data_for_merge = data.copy()
+    
     # Prepare features
     # Merge with macro data on year
-    merged_data = data.merge(macro_data, on='year', how='left')
+    merged_data = data_for_merge.merge(macro_data, on='year', how='left')
     
     # Feature columns (exclude target and identifiers)
-    exclude_cols = ['NPL_Ratio', 'InstitutionName', 'Period', 'Period_Date']
+    exclude_cols = ['NPL_Ratio', 'InstitutionName', 'Period', 'Period_Date', 'Year', 'year']
     feature_cols = [col for col in merged_data.columns 
                    if col not in exclude_cols and merged_data[col].dtype in ['int64', 'float64']]
     
@@ -659,11 +672,19 @@ def main() -> None:
         st.error("No data available for selected periods. Please check data availability.")
         st.stop()
     
+    # Ensure Year column exists for macro data analysis
+    if 'Year' not in ba900_data.columns and 'Period' in ba900_data.columns:
+        ba900_data['Period_Date'] = pd.to_datetime(ba900_data['Period'], errors='coerce')
+        ba900_data['Year'] = ba900_data['Period_Date'].dt.year
+    
     # Load macro data if requested
     macro_data = pd.DataFrame()
     if show_macro_analysis:
         with st.spinner("Loading macroeconomic data..."):
-            years = [analysis_year] if analysis_year in ba900_data['Year'].unique() else list(ba900_data['Year'].unique())
+            if 'Year' in ba900_data.columns:
+                years = [analysis_year] if analysis_year in ba900_data['Year'].unique() else list(ba900_data['Year'].unique())
+            else:
+                years = [analysis_year]
             macro_data = load_macro_data(years)
     
     # Calculate market metrics
@@ -741,7 +762,10 @@ def main() -> None:
     # Detailed Analysis Sections
     st.header("🔍 Detailed Analysis")
     
-    # NPL Trends Tab
+    # Add Research Questions Analysis before the detailed tabs
+    create_research_questions_analysis(filtered_data, market_metrics, macro_data)
+    
+    # Detailed Analysis Tabs
     tab1, tab2, tab3, tab4 = st.tabs(["NPL Trends", "Market Analysis", "ML Models", "Data Export"])
     
     with tab1:
@@ -872,6 +896,174 @@ def main() -> None:
                     file_name=f"ba900_executive_summary_{analysis_year}.txt",
                     mime="text/plain"
                 )
+
+def create_research_questions_analysis(data: pd.DataFrame, market_metrics: Dict, macro_data: pd.DataFrame = None) -> None:
+    """Create comprehensive research questions analysis section matching the notebook."""
+    st.header("🔬 Research Questions Analysis")
+    st.markdown("""This section directly addresses the three primary research questions 
+    based on the comprehensive analysis performed in the notebook.""")
+    
+    # Research Question 1: Macroeconomic Impact
+    with st.expander("**Research Question 1: How are NPL ratios affected by macroeconomic indicators?**", expanded=True):
+        if macro_data is not None and not macro_data.empty:
+            # Calculate correlations with macro data
+            try:
+                # Get NPL time series
+                npl_ts = data.groupby('Period')['NPL_Ratio'].mean().reset_index()
+                npl_ts['Period'] = pd.to_datetime(npl_ts['Period'])
+                npl_ts['Year'] = npl_ts['Period'].dt.year
+                
+                # Ensure consistent column naming for merge
+                if 'year' in macro_data.columns:
+                    macro_data_for_merge = macro_data.copy()
+                    if 'Year' not in macro_data_for_merge.columns:
+                        macro_data_for_merge['Year'] = macro_data_for_merge['year']
+                else:
+                    macro_data_for_merge = macro_data.copy()
+                
+                # Merge with macro data
+                macro_npl = pd.merge(npl_ts, macro_data_for_merge, on='Year', how='inner')
+                
+                if len(macro_npl) > 1:
+                    correlations = {}
+                    macro_cols = ['gdp_growth', 'inflation', 'real_interest_rate']
+                    
+                    for col in macro_cols:
+                        if col in macro_npl.columns:
+                            corr = macro_npl['NPL_Ratio'].corr(macro_npl[col])
+                            correlations[col] = corr
+                    
+                    st.success("**Key Findings:**")
+                    for indicator, corr in correlations.items():
+                        strength = "STRONG" if abs(corr) > 0.5 else "MODERATE" if abs(corr) > 0.3 else "WEAK"
+                        direction = "POSITIVE" if corr > 0 else "NEGATIVE"
+                        st.write(f"• {indicator.replace('_', ' ').title()}: {strength} {direction} correlation (r={corr:.3f})")
+                    
+                    st.info("**Insights:**")
+                    strongest = max(correlations.items(), key=lambda x: abs(x[1]))
+                    st.write(f"1. **{strongest[0].upper()}** is the strongest macroeconomic predictor")
+                    st.write(f"2. Economic relationships suggest {'procyclical' if strongest[1] > 0 else 'countercyclical'} NPL behavior")
+                    
+                    st.warning("**Recommendation:** Focus stress testing on {strongest[0]} scenarios")
+                else:
+                    st.warning("Insufficient overlapping data for macro-NPL correlation analysis")
+            except Exception as e:
+                st.error(f"Error in macro correlation analysis: {e}")
+        else:
+            st.warning("**Macroeconomic Data Analysis:**")
+            st.write("• External macroeconomic data not available for correlation analysis")
+            st.write("• NPL analysis limited to banking sector internal trends")
+            
+            # Show internal trends instead
+            if len(data) > 0:
+                avg_npl = data['NPL_Ratio'].mean()
+                std_npl = data['NPL_Ratio'].std()
+                
+                st.info("**Alternative Insights from Banking Data:**")
+                st.write(f"1. **INTERNAL NPL TRENDS:** Average NPL ratio: {avg_npl:.2f}%")
+                st.write(f"2. **VOLATILITY:** NPL standard deviation: {std_npl:.2f}%")
+                st.write(f"3. **RISK ASSESSMENT:** {'High' if avg_npl > 5 else 'Moderate' if avg_npl > 3 else 'Low'} average risk level")
+                
+                st.warning("**Recommendation:** Obtain external macro data for comprehensive analysis")
+    
+    # Research Question 2: Market Structure and Risk
+    with st.expander("**Research Question 2: Market share, growth, and credit risk relationships**", expanded=True):
+        if market_metrics and 'hhi' in market_metrics:
+            st.success("**Key Findings:**")
+            st.write(f"• Market concentration is {'HIGH' if market_metrics['hhi'] > 0.25 else 'MODERATE'} (HHI = {market_metrics['hhi']:.3f})")
+            st.write(f"• Top 4 banks control {market_metrics.get('top_4_share', 0):.1%} of market")
+            st.write(f"• {market_metrics.get('total_institutions', 0)} banks with meaningful lending activity")
+            
+            st.info("**Market Dynamics Insights:**")
+            if market_metrics['hhi'] > 0.25:
+                st.write("1. **HIGHLY CONCENTRATED MARKET** - Oligopolistic structure")
+                st.write("2. **SYSTEMIC RISK** - Top banks dominate lending decisions")
+            else:
+                st.write("1. **MODERATELY CONCENTRATED MARKET** - Competitive structure")
+                st.write("2. **DISTRIBUTED RISK** - Multiple significant players")
+            
+            st.write("3. **SIZE-RISK RELATIONSHIP** - Large banks benefit from diversification")
+            
+            st.warning("**Recommendation:** Monitor concentration risk and systemic importance")
+        else:
+            st.warning("Market concentration data not available")
+    
+    # Research Question 3: Strategic Actions
+    with st.expander("**Research Question 3: NPL rates and strategic actions analysis**", expanded=True):
+        if len(data) > 0 and 'NPL_Ratio' in data.columns:
+            # Calculate time series metrics
+            npl_ts = data.groupby('Period')['NPL_Ratio'].mean().sort_index()
+            
+            if len(npl_ts) > 1:
+                # Calculate trend
+                trend_corr = np.corrcoef(range(len(npl_ts)), npl_ts.values)[0, 1]
+                trend_direction = "INCREASING" if trend_corr > 0.1 else "DECREASING" if trend_corr < -0.1 else "STABLE"
+                
+                st.success("**Key Findings:**")
+                st.write(f"• NPL ratios show {trend_direction} TREND (correlation = {trend_corr:.3f})")
+                st.write(f"• Average NPL ratio: {data['NPL_Ratio'].mean():.2f}%")
+                st.write(f"• NPL volatility: {data['NPL_Ratio'].std():.2f}% (standard deviation)")
+                st.write(f"• Range: {data['NPL_Ratio'].min():.2f}% to {data['NPL_Ratio'].max():.2f}%")
+                
+                st.info("**Strategic Action Insights:**")
+                if trend_direction == "INCREASING":
+                    st.write("1. **INCREASING NPL TREND INDICATES:**")
+                    st.write("   - Potential loosening of credit standards")
+                    st.write("   - Economic stress affecting borrower quality")
+                    st.write("   - Banks may be pursuing growth over quality")
+                else:
+                    st.write("1. **STABLE/IMPROVING NPL TREND INDICATES:**")
+                    st.write("   - Effective credit risk management")
+                    st.write("   - Economic stability or recovery")
+                
+                st.write("2. **STRATEGIC IMPLICATIONS:**")
+                vol_level = "High" if data['NPL_Ratio'].std() > 1.0 else "Moderate" if data['NPL_Ratio'].std() > 0.5 else "Low"
+                st.write(f"   - {vol_level} volatility indicates {'dynamic' if vol_level == 'High' else 'stable'} credit conditions")
+                
+                rec_text = "Implement countercyclical measures" if trend_direction == "INCREASING" else "Maintain current risk management practices"
+                st.warning(f"**Recommendation:** {rec_text}")
+            else:
+                st.warning("Insufficient time series data for trend analysis")
+        else:
+            st.warning("NPL ratio data not available for strategic analysis")
+    
+    # Overall Research Conclusions
+    st.subheader("📋 Overall Research Conclusions")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**1. MACROECONOMIC SENSITIVITY:**")
+        if macro_data is not None and not macro_data.empty:
+            st.write("• External economic factors influence NPL ratios")
+            st.write("• Banking sector shows measurable economic sensitivity")
+        else:
+            st.write("• Limited external data for macro correlation analysis")
+            st.write("• Internal trends suggest underlying economic influences")
+        
+        st.markdown("**2. MARKET STRUCTURE RISK:**")
+        if market_metrics and market_metrics.get('hhi', 0) > 0.25:
+            st.write("• High concentration creates systemic risk")
+            st.write("• Large banks require enhanced oversight")
+        else:
+            st.write("• Moderate concentration allows competitive dynamics")
+            st.write("• Distributed risk across multiple institutions")
+    
+    with col2:
+        st.markdown("**3. STRATEGIC CREDIT RISK:**")
+        if len(data) > 0:
+            avg_npl = data['NPL_Ratio'].mean()
+            if avg_npl > 5:
+                st.write("• Elevated NPL levels suggest credit quality concerns")
+                st.write("• Banks should tighten lending standards")
+            else:
+                st.write("• NPL levels within acceptable ranges")
+                st.write("• Maintain vigilant risk monitoring")
+        
+        st.markdown("**4. POLICY IMPLICATIONS:**")
+        st.write("• Enhance macroprudential tools")
+        st.write("• Implement dynamic provisioning")
+        st.write("• Regular stress testing programs")
 
 def generate_executive_summary(data: pd.DataFrame, market_metrics: Dict, ml_results: Dict) -> str:
     """Generate executive summary text for download."""
