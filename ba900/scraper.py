@@ -7,7 +7,22 @@ endpoints used in this module are:
 
 * `GetPeriods/{ifType}` – Returns a list of available reporting
   periods for the selected return type.  For BA900 the API returns
-  strings in the form `yyyy‑mm‑dd`【773677845686591†L7-L33】.
+  strings in the form `yyyy‑mm‑d        # Load all CSV files from this period
+        csv_files = list(period_dir.glob(\"*.csv\"))
+        for csv_file in csv_files:
+            try:
+                # Parse CSV file with custom parser
+                df = parse_ba900_csv(csv_file)
+                
+                if not df.empty:
+                    # Add period info
+                    df['Period'] = period
+                    df['InstitutionName'] = df.get('Institution', csv_file.stem)
+                    
+                    all_records.append(df)
+            except Exception as e:
+                # Skip files that can't be read
+                continue91†L7-L33】.
 * `GetInstitutions/{ifType}/{period}` – Returns a collection of
   institutions (banks) that filed a return for the given period.  Each
   record includes an identifier (`Id`), the bank name and the last
@@ -46,7 +61,7 @@ SARB_IFDATA_BASE = "https://custom.resbank.co.za/SarbWebApi/SarbData/IFData"
 
 # Default cache directory.  Users can override this by passing a
 # different path into `fetch_period_data`.
-DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
+DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "raw" / "test_data"
 
 
 def _ensure_dir(path: Path) -> None:
@@ -356,13 +371,155 @@ def load_cached_data(
     return pd.DataFrame()
 
 
+def get_default_periods_2024() -> List[str]:
+    """Get default 2024 periods for analysis.
+    
+    Returns
+    -------
+    List[str]
+        List of 2024 periods in YYYY-MM-DD format
+    """
+    return [
+        '2024-01-01', '2024-02-01', '2024-03-01', '2024-04-01', 
+        '2024-05-01', '2024-06-01', '2024-07-01', '2024-08-01', 
+        '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01'
+    ]
+
+def parse_ba900_csv(csv_file: Path) -> pd.DataFrame:
+    """Parse a BA900 CSV file with metadata and tabular data.
+    
+    Parameters
+    ---------- 
+    csv_file : Path
+        Path to the CSV file to parse
+        
+    Returns
+    -------
+    pd.DataFrame
+        Parsed data with metadata included
+    """
+    try:
+        # Read the raw file to find the header row
+        with open(csv_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # Extract metadata from first few lines and find table start
+        metadata = {}
+        table_start = 6  # Default to line 7 (0-indexed)
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Extract metadata from key,value pairs
+            if ',' in line and not line.startswith('Table') and not line.startswith('Description'):
+                parts = line.split(',', 1)
+                if len(parts) == 2 and i < 10:  # Only first few lines
+                    key, value = parts
+                    key = key.strip().strip('\"')
+                    value = value.strip().strip('\"')
+                    if key and value:
+                        metadata[key] = value
+            
+            # Find the Description header row
+            elif line.startswith('Description,') or line.startswith('\"Description\"'):
+                table_start = i
+                break
+        
+        # Read the tabular data starting from the header row
+        if table_start < len(lines):
+            df = pd.read_csv(csv_file, skiprows=table_start)
+            
+            # Clean up column names
+            df.columns = df.columns.str.strip()
+            
+            # Add metadata as columns
+            for key, value in metadata.items():
+                df[key] = value
+                
+            # Add institution info from filename
+            df['InstitutionID'] = csv_file.stem
+            df['FilePath'] = str(csv_file)
+            
+            return df
+        else:
+            # Fallback: try to read as regular CSV
+            df = pd.read_csv(csv_file)
+            df['InstitutionID'] = csv_file.stem
+            df['FilePath'] = str(csv_file)
+            return df
+            
+    except Exception as e:
+        # Return empty DataFrame if parsing fails
+        print(f"Error parsing {csv_file}: {e}")
+        return pd.DataFrame()
+
+def load_scraped_data(periods: List[str], input_dir: Optional[Path] = None) -> pd.DataFrame:
+    """Load previously scraped BA900 data from test_data cache.
+    
+    This function loads CSV data from the test_data directory structure.
+    The test_data contains CSV files organized by period in folders like
+    BA900_YYYY-MM-DD_zipcsv/.
+    
+    Parameters
+    ----------
+    periods : List[str]
+        List of periods to load (e.g., ['2024-01-01', '2024-02-01'])
+    input_dir : Optional[Path]
+        Directory containing cached data. If None, uses DEFAULT_CACHE_DIR.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Combined DataFrame with all requested periods
+    """
+    in_dir = input_dir or DEFAULT_CACHE_DIR
+    
+    if not in_dir.exists():
+        return pd.DataFrame()
+    
+    all_records = []
+    
+    for period in periods:
+        # Look for period directory in format BA900_YYYY-MM-DD_zipcsv
+        period_dir = in_dir / f"BA900_{period}_zipcsv"
+        if not period_dir.exists():
+            continue
+            
+        # Load all CSV files from this period
+        csv_files = list(period_dir.glob("*.csv"))
+        for csv_file in csv_files:
+            try:
+                # Parse CSV file with custom parser
+                df = parse_ba900_csv(csv_file)
+                
+                if not df.empty:
+                    # Add period info
+                    df['Period'] = period
+                    df['InstitutionName'] = df.get('Institution', csv_file.stem)
+                    
+                    all_records.append(df)
+            except Exception as e:
+                # Skip files that can't be read
+                continue
+    
+    if not all_records:
+        return pd.DataFrame()
+    
+    # Combine all records
+    combined_df = pd.concat(all_records, ignore_index=True)
+    return combined_df
+
+
 if __name__ == "__main__":
     import argparse
+    import json
 
     parser = argparse.ArgumentParser(description="Download BA900 data from the SARB API")
     parser.add_argument("--if-type", default="BA900", help="Return type (BA900, DI900, etc.)")
     parser.add_argument(
-        "--periods", nargs="+", help="One or more periods to fetch (e.g. 2025-01-01)")
+        "--periods", nargs="+", help="One or more periods to fetch (e.g. 2024-01-01)")
     parser.add_argument(
         "--output", default=None, help="Directory in which to store cached data (defaults to data/raw)")
     parser.add_argument(
@@ -371,9 +528,19 @@ if __name__ == "__main__":
         "--sleep", type=float, default=1.0, help="Seconds to sleep between API calls")
     args = parser.parse_args()
     if not args.periods:
-        # If no periods are specified, fetch the most recent 2 periods
+        # If no periods are specified, fetch all 2024 periods by default
         all_periods = get_periods(args.if_type)
-        args.periods = all_periods[:2]
+        # Parse the JSON response and filter for 2024 periods
+        if isinstance(all_periods, list) and len(all_periods) > 0:
+            periods_list = json.loads(all_periods[0])
+            args.periods = [p for p in periods_list if p.startswith("2024")]
+        else:
+            # Fallback to hardcoded 2024 periods if API format changes
+            args.periods = [
+                '2024-01-01', '2024-02-01', '2024-03-01', '2024-04-01', 
+                '2024-05-01', '2024-06-01', '2024-07-01', '2024-08-01', 
+                '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01'
+            ]
     df = fetch_period_data(
         args.if_type,
         periods=args.periods,

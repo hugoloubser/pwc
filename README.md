@@ -1,6 +1,6 @@
 # PwC BA900 Data Science Assessment
 
-This repository provides a reference implementation for the PwC technical assessment that asks candidates to analyse **Non‑Performing Loan (NPL) ratios** in the South African banking sector using the South African Reserve Bank (SARB) **BA900** return.  The work is designed to be pragmatic and reproducible – it includes a data scraping module, preprocessing utilities, exploratory analysis notebooks, a simple machine learning workflow and a lightweight Streamlit dashboard.
+This repository provides a reference implementation for a technical assessment that asks candidates to analyse **Non‑Performing Loan (NPL) ratios** in the South African banking sector using the South African Reserve Bank (SARB) **BA900** return.  The work is designed to be pragmatic and reproducible – it includes a data scraping module, preprocessing utilities, exploratory analysis notebooks, a simple machine learning workflow and a lightweight Streamlit dashboard.
 
 ## Project structure
 
@@ -103,4 +103,4 @@ The `ba900/app.py` script wraps the analysis in a single‑page Streamlit applic
 
 ## Disclaimer
 
-This code is provided for educational purposes as part of a PwC assessment.  It is not endorsed by the South African Reserve Bank.  Please verify any insights or conclusions derived from this data with official sources before making decisions.
+This code is provided for educational purposes as part of an assessment.  It is not endorsed by the South African Reserve Bank.  Please verify any insights or conclusions derived from this data with official sources before making decisions.
