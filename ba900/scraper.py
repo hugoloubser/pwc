@@ -358,11 +358,12 @@ def load_cached_data(
 
 if __name__ == "__main__":
     import argparse
+    import json
 
     parser = argparse.ArgumentParser(description="Download BA900 data from the SARB API")
     parser.add_argument("--if-type", default="BA900", help="Return type (BA900, DI900, etc.)")
     parser.add_argument(
-        "--periods", nargs="+", help="One or more periods to fetch (e.g. 2025-01-01)")
+        "--periods", nargs="+", help="One or more periods to fetch (e.g. 2024-01-01)")
     parser.add_argument(
         "--output", default=None, help="Directory in which to store cached data (defaults to data/raw)")
     parser.add_argument(
@@ -371,9 +372,19 @@ if __name__ == "__main__":
         "--sleep", type=float, default=1.0, help="Seconds to sleep between API calls")
     args = parser.parse_args()
     if not args.periods:
-        # If no periods are specified, fetch the most recent 2 periods
+        # If no periods are specified, fetch all 2024 periods by default
         all_periods = get_periods(args.if_type)
-        args.periods = all_periods[:2]
+        # Parse the JSON response and filter for 2024 periods
+        if isinstance(all_periods, list) and len(all_periods) > 0:
+            periods_list = json.loads(all_periods[0])
+            args.periods = [p for p in periods_list if p.startswith("2024")]
+        else:
+            # Fallback to hardcoded 2024 periods if API format changes
+            args.periods = [
+                '2024-01-01', '2024-02-01', '2024-03-01', '2024-04-01', 
+                '2024-05-01', '2024-06-01', '2024-07-01', '2024-08-01', 
+                '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01'
+            ]
     df = fetch_period_data(
         args.if_type,
         periods=args.periods,

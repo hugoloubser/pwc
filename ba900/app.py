@@ -30,12 +30,12 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
-from .visualization import (
+from visualization import (
     plot_npl_over_time,
     plot_npl_vs_macro,
     plot_feature_importance,
 )
-from .modeling import prepare_regression_dataset, train_simple_model
+from modeling import prepare_regression_dataset, train_simple_model
 
 
 @st.cache_data
