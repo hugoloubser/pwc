@@ -46,7 +46,7 @@ SARB_IFDATA_BASE = "https://custom.resbank.co.za/SarbWebApi/SarbData/IFData"
 
 # Default cache directory.  Users can override this by passing a
 # different path into `fetch_period_data`.
-DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
+DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 
 def _ensure_dir(path: Path) -> None:
