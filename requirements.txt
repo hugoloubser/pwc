@@ -1,0 +1,9 @@
+pandas
+requests
+xmltodict
+lxml
+scikit-learn
+seaborn
+matplotlib
+streamlit
+pandas_datareader
