@@ -356,6 +356,86 @@ def load_cached_data(
     return pd.DataFrame()
 
 
+def get_default_periods_2024() -> List[str]:
+    """Get default 2024 periods for analysis.
+    
+    Returns
+    -------
+    List[str]
+        List of 2024 periods in YYYY-MM-DD format
+    """
+    return [
+        '2024-01-01', '2024-02-01', '2024-03-01', '2024-04-01', 
+        '2024-05-01', '2024-06-01', '2024-07-01', '2024-08-01', 
+        '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01'
+    ]
+
+def load_scraped_data(periods: List[str], input_dir: Optional[Path] = None) -> pd.DataFrame:
+    """Load previously scraped BA900 data from cache.
+    
+    This function loads cached data that was previously scraped using
+    fetch_period_data(). It looks for pickled DataFrames in the cache
+    directory structure.
+    
+    Parameters
+    ----------
+    periods : List[str]
+        List of periods to load (e.g., ['2024-01-01', '2024-02-01'])
+    input_dir : Optional[Path]
+        Directory containing cached data. If None, uses DEFAULT_CACHE_DIR.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Combined DataFrame with all requested periods
+    """
+    in_dir = input_dir or DEFAULT_CACHE_DIR
+    ba900_dir = in_dir / "BA900"
+    
+    if not ba900_dir.exists():
+        return pd.DataFrame()
+    
+    all_records = []
+    
+    for period in periods:
+        period_dir = ba900_dir / period
+        if not period_dir.exists():
+            continue
+            
+        # Look for pickle files first (faster)
+        pickle_files = list(period_dir.glob("*.pkl"))
+        if pickle_files:
+            for pickle_file in pickle_files:
+                try:
+                    df = pd.read_pickle(pickle_file)
+                    all_records.append(df)
+                except Exception:
+                    continue
+        else:
+            # Fall back to JSON files
+            json_files = list(period_dir.glob("*.json"))
+            for json_file in json_files:
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # Convert to DataFrame
+                    flattened = _flatten_record(data)
+                    df = pd.DataFrame([flattened])
+                    df['Period'] = period
+                    df['InstitutionName'] = json_file.stem
+                    all_records.append(df)
+                except Exception:
+                    continue
+    
+    if not all_records:
+        return pd.DataFrame()
+    
+    # Combine all records
+    combined_df = pd.concat(all_records, ignore_index=True)
+    return combined_df
+
+
 if __name__ == "__main__":
     import argparse
     import json
